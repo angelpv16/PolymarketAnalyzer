@@ -1,8 +1,8 @@
-duckdb==0.10.3
-pandas==2.2.2
-requests==2.31.0
-streamlit==1.35.0
-apscheduler==3.10.4
-python-dotenv==1.0.1
-plotly==5.22.0
-pytest==8.2.0
+duckdb>=0.10.3
+pandas>=2.2.0
+requests>=2.31.0
+streamlit>=1.35.0
+apscheduler>=3.10.4
+python-dotenv>=1.0.1
+plotly>=5.22.0
+pytest>=8.2.0
