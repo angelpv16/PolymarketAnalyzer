@@ -17,6 +17,10 @@ from src.storage import (
 )
 from src.analyzer import calcular_features
 from src.classifier import clasificar
+from src.pattern_analyzer import calcular_patrones
+from src.llm_analyzer import generar_narrativa
+from src.rules_extractor import extraer_reglas, exportar_reglas_txt
+from src.config import GEMINI_API_KEY
 
 init_db()
 
@@ -58,6 +62,11 @@ def _fetch_completo_cached(wallet: str) -> tuple[list[dict], list[dict]]:
 @st.cache_data(ttl=3600, show_spinner=False)
 def _calcular_features_cached(wallet: str) -> dict:
     return calcular_features(wallet)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _calcular_patrones_cached(wallet: str) -> dict:
+    return calcular_patrones(wallet)
 
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
@@ -146,12 +155,41 @@ if analizar:
             st.error(f"Error clasificando: {e}")
             st.stop()
 
+        try:
+            with st.spinner("Analizando patrones secuenciales..."):
+                patrones = _calcular_patrones_cached(wallet)
+        except Exception as e:
+            st.error(f"Error calculando patrones: {e}")
+            st.stop()
+
+        narrativa = None
+        if GEMINI_API_KEY:
+            try:
+                with st.spinner("Generando narrativa con Gemini..."):
+                    narrativa = generar_narrativa(
+                        wallet, features, patrones, estilo, descripcion, scores
+                    )
+            except Exception as e:
+                st.warning(f"Error generando narrativa: {e}")
+
+        try:
+            with st.spinner("Extrayendo reglas operacionales..."):
+                reglas = extraer_reglas(
+                    wallet, features, patrones, estilo, descripcion
+                )
+        except Exception as e:
+            st.warning(f"Error extrayendo reglas: {e}")
+            reglas = None
+
         st.session_state["resultado"] = {
             "wallet": wallet,
             "features": features,
             "estilo": estilo,
             "descripcion": descripcion,
             "scores": scores,
+            "patrones": patrones,
+            "narrativa": narrativa,
+            "reglas": reglas,
         }
 
 # ── Resultados ───────────────────────────────────────────────────────────────
@@ -163,6 +201,9 @@ if "resultado" in st.session_state:
     descripcion = r["descripcion"]
     scores = r["scores"]
     wallet = r["wallet"]
+    patrones = r.get("patrones", {})
+    narrativa = r.get("narrativa")
+    reglas = r.get("reglas")
 
     color = COLORES.get(estilo, "#64748b")
 
@@ -268,14 +309,138 @@ if "resultado" in st.session_state:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    # Bloque 4 — Scores de arquetipos
+    # Bloque 4 — Patrones secuenciales
+    if patrones:
+        st.subheader("Patrones secuenciales")
+        col_a, col_b, col_c = st.columns(3)
+
+        # Columna 1: Acumulación + Size Scaling
+        with col_a:
+            acc = patrones.get("acumulacion", {})
+            if acc.get("accumulation_type"):
+                st.markdown(f"**Acumulación:** `{acc['accumulation_type']}`")
+                st.caption(
+                    f"Re-entries: {acc.get('n_reentries_analyzed', 0)} | "
+                    f"Flat: {acc.get('pct_flat_reentries', 0):.0f}% | "
+                    f"Dip: {acc.get('pct_dip_reentries', 0):.0f}% | "
+                    f"Momentum: {acc.get('pct_momentum_reentries', 0):.0f}%"
+                )
+            else:
+                st.markdown("**Acumulación:** sin datos")
+
+            ss = patrones.get("size_scaling", {})
+            if ss.get("size_scaling_type"):
+                st.markdown(f"**Size scaling:** `{ss['size_scaling_type']}`")
+                ratio_2nd = ss.get("avg_size_ratio_2nd_to_1st")
+                ratio_3rd = ss.get("avg_size_ratio_3rd_to_1st")
+                caption = f"Markets multi-entry: {ss.get('n_markets_multi_entry', 0)}"
+                if ratio_2nd is not None:
+                    caption += f" | 2nd/1st: {ratio_2nd:.2f}x"
+                if ratio_3rd is not None:
+                    caption += f" | 3rd/1st: {ratio_3rd:.2f}x"
+                st.caption(caption)
+            else:
+                st.markdown("**Size scaling:** sin datos")
+
+        # Columna 2: Sesiones
+        with col_b:
+            ses = patrones.get("sesiones", {})
+            if ses.get("n_sessions", 0) > 0:
+                st.metric("Sesiones", ses["n_sessions"])
+                st.caption(
+                    f"Mediana trades/sesión: {ses.get('median_trades_per_session', '—')} | "
+                    f"Duración media: {ses.get('avg_session_duration_min', '—')} min"
+                )
+                st.caption(
+                    f"Markets/sesión: {ses.get('avg_markets_per_session', '—')} | "
+                    f"Max trades: {ses.get('max_trades_single_session', '—')}"
+                )
+            else:
+                st.markdown("**Sesiones:** sin datos")
+
+            cm = patrones.get("ciclo_mercado", {})
+            if cm.get("avg_entry_pct_lifecycle") is not None:
+                st.markdown(f"**Ciclo de mercado:** {cm['avg_entry_pct_lifecycle']:.0f}% del lifecycle")
+                st.caption(
+                    f"Early (<25%): {cm.get('pct_early_entries', 0):.0f}% | "
+                    f"Late (>75%): {cm.get('pct_late_entries', 0):.0f}% | "
+                    f"Near deadline: {cm.get('adds_near_deadline', 0)}"
+                )
+
+        # Columna 3: Concentración + Salidas
+        with col_c:
+            conc = patrones.get("concentracion", {})
+            if conc.get("gini_coefficient") is not None:
+                st.markdown(f"**Concentración (Gini):** {conc['gini_coefficient']:.3f}")
+                st.caption(
+                    f"Top market: {conc.get('top_market_pct', 0):.1f}% | "
+                    f"Top 3: {conc.get('top_3_markets_pct', 0):.1f}% | "
+                    f"Markets para 80%: {conc.get('n_markets_for_80pct', '—')}"
+                )
+            else:
+                st.markdown("**Concentración:** sin datos")
+
+            sal = patrones.get("salidas", {})
+            if sal.get("exit_timing"):
+                st.markdown(f"**Salidas:** `{sal['exit_timing']}`")
+                caption = f"Markets con exit: {sal.get('n_markets_with_exit', 0)} ({sal.get('pct_markets_with_exit', 0):.1f}%)"
+                if sal.get("avg_exit_days_before_end") is not None:
+                    caption += f" | Media: {sal['avg_exit_days_before_end']:.0f}d antes del cierre"
+                st.caption(caption)
+            else:
+                st.markdown("**Salidas:** sin datos")
+
+    # Bloque 5 — Narrativa LLM
+    if narrativa:
+        st.subheader("Análisis narrativo")
+        st.markdown(
+            f"""
+            <div style="
+                background-color: #1a1a2e;
+                border-left: 4px solid #e94560;
+                padding: 1.2rem 1.5rem;
+                border-radius: 0.5rem;
+                margin-bottom: 1rem;
+                line-height: 1.6;
+                color: #eee;
+            ">{narrativa}</div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.caption("Generado por Gemini 2.5 Flash")
+    elif not GEMINI_API_KEY:
+        st.info(
+            "Para activar el análisis narrativo con IA, configura GEMINI_API_KEY en tu archivo .env. "
+            "Puedes obtener una key gratuita en https://aistudio.google.com/apikey"
+        )
+
+    # Bloque 6 — Reglas operacionales
+    if reglas:
+        st.subheader("Reglas operacionales")
+        st.caption("Checklist accionable para replicar esta estrategia — cada regla es una decisión SÍ/NO en tiempo real.")
+
+        for cat, lista in reglas.items():
+            with st.expander(f"**{cat}** ({len(lista)} reglas)", expanded=True):
+                for regla_texto in lista:
+                    st.checkbox(regla_texto, value=False, disabled=True, key=f"rule_{cat}_{regla_texto[:40]}")
+
+        # Exportar
+        txt = exportar_reglas_txt(reglas, estilo, wallet)
+        st.download_button(
+            label="Exportar reglas (.txt)",
+            data=txt,
+            file_name=f"reglas_{wallet[:10]}.txt",
+            mime="text/plain",
+        )
+
+    # Bloque 7 — Scores de arquetipos
     st.subheader("Scores por arquetipo")
     for arq, score in sorted(scores.items(), key=lambda x: -x[1]):
         col_label, col_bar = st.columns([1, 3])
         col_label.markdown(f"**{arq}** — {score:.0%}")
         col_bar.progress(score)
 
-    # Bloque 5 — Últimos trades
+    # Bloque 8 — Últimos 20 trades
     st.subheader("Últimos 20 trades")
     df = obtener_trades_wallet(wallet)
     if not df.empty:
@@ -290,7 +455,7 @@ if "resultado" in st.session_state:
     else:
         st.info("No hay trades almacenados para esta wallet.")
 
-    # Bloque 6 — Nota sobre datos no disponibles
+    # Bloque 9 — Nota sobre datos no disponibles
     if features.get("win_rate") is None or features.get("roi_estimado") is None:
         st.info(
             "ℹ️ Algunas métricas (win rate, ROI) no están disponibles porque "

@@ -26,6 +26,9 @@ INTERVALO_HORAS: int = int(os.getenv("INTERVALO_HORAS", "6"))
 # --- Ruta de la base de datos ---
 DB_PATH: str = "data/polymarket.db"
 
+# --- Gemini API (narrativa LLM) ---
+GEMINI_API_KEY: str | None = os.getenv("GEMINI_API_KEY") or None
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
@@ -33,3 +36,4 @@ if __name__ == "__main__":
     print(f"  WALLETS:         {WALLETS}")
     print(f"  INTERVALO_HORAS: {INTERVALO_HORAS}")
     print(f"  DB_PATH:         {DB_PATH}")
+    print(f"  GEMINI_API_KEY:  {'***' if GEMINI_API_KEY else 'no definida'}")
