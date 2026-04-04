@@ -12,10 +12,13 @@ from src.storage import (
     get_connection,
     guardar_trades,
     guardar_markets,
+    init_db,
     obtener_trades_wallet,
 )
 from src.analyzer import calcular_features
 from src.classifier import clasificar
+
+init_db()
 
 # ── Configuración de página ──────────────────────────────────────────────────
 
