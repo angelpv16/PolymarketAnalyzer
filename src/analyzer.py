@@ -29,7 +29,8 @@ def _cargar_datos(wallet: str) -> tuple[pd.DataFrame, pd.DataFrame]:
         ).fetchdf()
         merged = con.execute(
             """
-            SELECT t.*, m.question, m.category, m.end_date
+            SELECT t.*, m.question, m.category, m.end_date,
+                   m.resolved, m.winning_outcome
             FROM trades t
             LEFT JOIN markets m ON t.market_id = m.id
             WHERE t.wallet = ?
@@ -175,20 +176,39 @@ def _features_mercado(trades: pd.DataFrame, merged: pd.DataFrame) -> dict:
 # ── Features de salidas y rendimiento ────────────────────────────────────────
 
 
-def _features_rendimiento(trades: pd.DataFrame) -> dict:
-    """Calcula features de rendimiento y salidas."""
+def _features_rendimiento(trades: pd.DataFrame, merged: pd.DataFrame) -> dict:
+    """Calcula features de rendimiento y salidas usando datos de resolución."""
     resultado: dict = {}
 
     compras = trades[trades["side"] == "BUY"]
     ventas = trades[trades["side"] == "SELL"]
 
-    # win_rate: no disponible — el campo outcome contiene el nombre del token
-    # (Yes, Up, Down, Lakers...) no si la posición ganó. Sin datos de resolución.
-    logger.warning(
-        "win_rate: no calculable — el campo 'outcome' contiene el nombre del token, "
-        "no el resultado de la posición. Se necesitaría el estado de resolución del mercado."
-    )
-    resultado["win_rate"] = None
+    # win_rate y roi_estimado usando datos de resolución de mercados
+    compras_resueltas = merged[
+        (merged["side"] == "BUY") & (merged["resolved"] == True)  # noqa: E712
+    ]
+
+    if len(compras_resueltas) > 0:
+        # Una compra ganó si el outcome del token comprado == winning_outcome del mercado
+        ganadoras = compras_resueltas["outcome"] == compras_resueltas["winning_outcome"]
+        resultado["win_rate"] = round(float(ganadoras.sum() / len(compras_resueltas) * 100), 2)
+
+        # ROI estimado:
+        # Ganadoras: ganancia = size * (1 - price)  (pagaste price, vale 1)
+        # Perdedoras: pérdida = -size * price  (perdiste lo invertido)
+        ganancias = (
+            compras_resueltas.loc[ganadoras, "size"]
+            * (1 - compras_resueltas.loc[ganadoras, "price"])
+        ).sum()
+        perdidas = (
+            compras_resueltas.loc[~ganadoras, "size"]
+            * compras_resueltas.loc[~ganadoras, "price"]
+        ).sum()
+        resultado["roi_estimado"] = round(float(ganancias - perdidas), 2)
+    else:
+        logger.warning("win_rate/roi_estimado: no hay posiciones BUY en mercados resueltos")
+        resultado["win_rate"] = None
+        resultado["roi_estimado"] = None
 
     # hold_rate: % de mercados donde solo hay BUYs (sin SELL → mantuvo hasta resolución)
     mercados_compra = set(compras["market_id"].unique())
@@ -201,13 +221,6 @@ def _features_rendimiento(trades: pd.DataFrame) -> dict:
     else:
         logger.warning("hold_rate: no hay mercados con compras")
         resultado["hold_rate"] = None
-
-    # roi_estimado: no calculable sin datos de resolución de mercados
-    logger.warning(
-        "roi_estimado: no calculable — sin datos de resolución de mercados. "
-        "Se necesitaría saber qué mercados resolvieron y en qué dirección."
-    )
-    resultado["roi_estimado"] = None
 
     # n_trades y n_mercados
     resultado["n_trades"] = len(trades)
@@ -253,7 +266,7 @@ def calcular_features(wallet: str) -> dict:
     features.update(_features_timing(merged))
     features.update(_features_sizing(trades))
     features.update(_features_mercado(trades, merged))
-    features.update(_features_rendimiento(trades))
+    features.update(_features_rendimiento(trades, merged))
 
     logger.info("Features calculados para %s: %d features", wallet, len(features))
     return features

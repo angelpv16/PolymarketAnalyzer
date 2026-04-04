@@ -44,10 +44,13 @@ class TestAnalyzer(unittest.TestCase):
         """)
         self._real_con.execute("""
             CREATE TABLE markets (
-                id       VARCHAR PRIMARY KEY,
-                question VARCHAR,
-                category VARCHAR,
-                end_date TIMESTAMP
+                id               VARCHAR PRIMARY KEY,
+                question         VARCHAR,
+                category         VARCHAR,
+                end_date         TIMESTAMP,
+                slug             VARCHAR,
+                resolved         BOOLEAN DEFAULT FALSE,
+                winning_outcome  VARCHAR
             )
         """)
 
@@ -70,7 +73,7 @@ class TestAnalyzer(unittest.TestCase):
                 "INSERT INTO trades VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", list(t)
             )
 
-        # Insertar 3 markets con end_date futuro
+        # Insertar 3 markets con end_date futuro (sin resolver)
         markets = [
             ("mkt_001", "Will BTC exceed $100k?", "Crypto",   base + timedelta(days=30)),
             ("mkt_002", "Will it rain tomorrow?", "Weather",  base + timedelta(days=45)),
@@ -78,7 +81,7 @@ class TestAnalyzer(unittest.TestCase):
         ]
         for m in markets:
             self._real_con.execute(
-                "INSERT INTO markets VALUES (?, ?, ?, ?)", list(m)
+                "INSERT INTO markets (id, question, category, end_date) VALUES (?, ?, ?, ?)", list(m)
             )
 
         # Parchear get_connection para devolver nuestra conexión en memoria
@@ -121,6 +124,44 @@ class TestAnalyzer(unittest.TestCase):
                 val, tipos_validos,
                 msg=f"Feature '{key}' tiene tipo inesperado: {type(val).__name__}",
             )
+
+
+    def test_win_rate_con_mercados_resueltos(self):
+        """win_rate debe calcularse correctamente con mercados resueltos."""
+        # Marcar mkt_001 como resuelto con winner "Yes"
+        # y mkt_002 como resuelto con winner "Yes" (trades tienen "No" → pierden)
+        self._real_con.execute(
+            "UPDATE markets SET resolved = TRUE, winning_outcome = 'Yes' WHERE id = 'mkt_001'"
+        )
+        self._real_con.execute(
+            "UPDATE markets SET resolved = TRUE, winning_outcome = 'Yes' WHERE id = 'mkt_002'"
+        )
+
+        features = calcular_features("0xTEST")
+
+        # Compras en mkt_001: outcome "Yes" → ganadoras (t01, t02, t08)
+        # Compras en mkt_002: outcome "No"  → perdedoras (t03, t05)
+        # Total compras resueltas: 5, ganadoras: 3
+        self.assertIsNotNone(features["win_rate"])
+        self.assertAlmostEqual(features["win_rate"], 60.0, delta=0.1)
+
+    def test_win_rate_none_sin_mercados_resueltos(self):
+        """win_rate debe ser None si no hay mercados resueltos."""
+        features = calcular_features("0xTEST")
+        self.assertIsNone(features["win_rate"])
+
+    def test_roi_estimado_con_mercados_resueltos(self):
+        """roi_estimado debe calcularse correctamente."""
+        self._real_con.execute(
+            "UPDATE markets SET resolved = TRUE, winning_outcome = 'Yes' WHERE id = 'mkt_001'"
+        )
+        self._real_con.execute(
+            "UPDATE markets SET resolved = TRUE, winning_outcome = 'Yes' WHERE id = 'mkt_002'"
+        )
+
+        features = calcular_features("0xTEST")
+        self.assertIsNotNone(features["roi_estimado"])
+        self.assertIsInstance(features["roi_estimado"], float)
 
 
 if __name__ == "__main__":

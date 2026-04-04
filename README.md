@@ -91,6 +91,7 @@ PolymarketAnalyzer/
 │   ├── storage.py          # Capa de almacenamiento DuckDB (schema, CRUD)
 │   ├── analyzer.py         # Calculo de features de behavioral fingerprinting
 │   ├── classifier.py       # Clasificacion en arquetipos con reglas y scores
+│   ├── update_resolutions.py # Actualizacion de resoluciones de mercados (Gamma API)
 │   └── main.py             # Orquestador del pipeline con APScheduler
 ├── tests/
 │   ├── __init__.py
@@ -107,7 +108,7 @@ PolymarketAnalyzer/
 ## Notas tecnicas
 
 - La API publica usada es `data-api.polymarket.com` (sin autenticacion). La info de mercados se obtiene de `gamma-api.polymarket.com`.
-- **win_rate y ROI no estan disponibles**: el campo `outcome` de la API contiene el nombre del token (Yes, No, Lakers...), no el resultado de resolucion del mercado. Para calcular rendimiento real se necesitaria cruzar con datos de resolucion.
+- **win_rate y ROI**: se calculan cruzando el outcome de cada trade con el resultado de resolucion del mercado obtenido de la Gamma API. El script `src/update_resolutions.py` consulta mercados con fecha pasada y actualiza la DB con el outcome ganador. Se ejecuta automaticamente al inicio de cada pipeline.
 - Los datos se almacenan en `data/polymarket.db` (DuckDB local, ignorado por git).
 - El clasificador usa reglas evaluadas en orden de prioridad. Los scores (0-1) dan una vision cuantitativa complementaria.
 - El hold rate se calcula como porcentaje de mercados donde solo hay compras (sin ventas = mantuvo hasta resolucion).

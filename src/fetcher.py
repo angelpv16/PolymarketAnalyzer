@@ -105,6 +105,7 @@ def obtener_market_info(market_slug: str) -> dict | None:
             "question": m.get("question", ""),
             "category": m.get("category", ""),
             "end_date": m.get("endDate", ""),
+            "slug": market_slug,
         }
         _market_cache[market_slug] = market
         return market
@@ -113,6 +114,61 @@ def obtener_market_info(market_slug: str) -> dict | None:
         logger.warning("Error obteniendo market %s: %s", market_slug, e)
         _market_cache[market_slug] = None
         return None
+
+
+# ── Resoluciones ────────────────────────────────────────────────────────────
+
+
+def fetch_resoluciones(markets: list[dict]) -> list[dict]:
+    """Consulta la Gamma API para obtener el estado de resolución de mercados.
+
+    Recibe lista de dicts con 'id' y 'slug'.
+    Devuelve lista de dicts con 'id' y 'winning_outcome' para los resueltos.
+    """
+    import json as _json
+
+    resueltos: list[dict] = []
+    total = len(markets)
+
+    for m in markets:
+        slug = m["slug"]
+        try:
+            resp = requests.get(GAMMA_API_URL, params={"slug": slug}, timeout=10)
+            resp.raise_for_status()
+            results = resp.json()
+
+            if not results:
+                logger.debug("Resolución: slug %s no encontrado en Gamma", slug)
+                continue
+
+            gm = results[0]
+            if not gm.get("closed", False):
+                continue
+
+            outcomes = _json.loads(gm.get("outcomes", "[]"))
+            prices = _json.loads(gm.get("outcomePrices", "[]"))
+
+            if not outcomes or not prices:
+                continue
+
+            # Un mercado está resuelto si un outcome tiene precio >= 0.99
+            winner_idx = None
+            for i, p in enumerate(prices):
+                if float(p) > 0.99:
+                    winner_idx = i
+                    break
+
+            if winner_idx is not None:
+                resueltos.append({
+                    "id": m["id"],
+                    "winning_outcome": outcomes[winner_idx],
+                })
+
+        except (requests.RequestException, ValueError, KeyError) as e:
+            logger.warning("Error consultando resolución para slug %s: %s", slug, e)
+
+    logger.info("Resoluciones: %d resueltos de %d consultados", len(resueltos), total)
+    return resueltos
 
 
 # ── Enriquecimiento ──────────────────────────────────────────────────────────

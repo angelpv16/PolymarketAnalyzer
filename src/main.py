@@ -84,6 +84,18 @@ def analizar_wallet(wallet: str) -> dict | None:
         return None
 
 
+def _actualizar_resoluciones() -> None:
+    """Actualiza resoluciones de mercados antes del análisis."""
+    from src.update_resolutions import actualizar_resoluciones
+
+    logger.info("Actualizando resoluciones de mercados...")
+    stats = actualizar_resoluciones()
+    logger.info(
+        "Resoluciones actualizadas: %d consultados, %d resueltos",
+        stats["consultados"], stats["resueltos"],
+    )
+
+
 def pipeline() -> list[dict]:
     """Ejecuta el pipeline para todas las wallets configuradas."""
     if not config.WALLETS:
@@ -94,6 +106,12 @@ def pipeline() -> list[dict]:
 
     total = len(config.WALLETS)
     logger.info("=== Pipeline iniciado — %d wallets ===", total)
+
+    # Actualizar resoluciones antes de analizar
+    try:
+        _actualizar_resoluciones()
+    except Exception as e:
+        logger.error("Error actualizando resoluciones (continuando): %s", e)
 
     resultados: list[dict] = []
     for wallet in config.WALLETS:

@@ -45,15 +45,34 @@ def init_db() -> None:
         """)
         con.execute("""
             CREATE TABLE IF NOT EXISTS markets (
-                id       VARCHAR PRIMARY KEY,
-                question VARCHAR,
-                category VARCHAR,
-                end_date TIMESTAMP
+                id               VARCHAR PRIMARY KEY,
+                question         VARCHAR,
+                category         VARCHAR,
+                end_date         TIMESTAMP,
+                slug             VARCHAR,
+                resolved         BOOLEAN DEFAULT FALSE,
+                winning_outcome  VARCHAR
             )
         """)
+        # Migrar tabla markets existente si le faltan columnas
+        _migrar_markets(con)
         logger.info("Tablas trades y markets listas")
     finally:
         con.close()
+
+
+def _migrar_markets(con: duckdb.DuckDBPyConnection) -> None:
+    """Añade columnas de resolución a markets si no existen."""
+    columnas = {row[0] for row in con.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'markets'").fetchall()}
+    if "slug" not in columnas:
+        con.execute("ALTER TABLE markets ADD COLUMN slug VARCHAR")
+        logger.info("Columna 'slug' añadida a markets")
+    if "resolved" not in columnas:
+        con.execute("ALTER TABLE markets ADD COLUMN resolved BOOLEAN DEFAULT FALSE")
+        logger.info("Columna 'resolved' añadida a markets")
+    if "winning_outcome" not in columnas:
+        con.execute("ALTER TABLE markets ADD COLUMN winning_outcome VARCHAR")
+        logger.info("Columna 'winning_outcome' añadida a markets")
 
 
 # ── Escritura ─────────────────────────────────────────────────────────────────
@@ -97,15 +116,89 @@ def guardar_markets(markets: list[dict]) -> int:
             logger.debug("INSERT market %s", m.get("id"))
             con.execute(
                 """
-                INSERT OR IGNORE INTO markets (id, question, category, end_date)
-                VALUES (?, ?, ?, ?)
+                INSERT OR IGNORE INTO markets (id, question, category, end_date, slug)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                [m["id"], m["question"], m["category"], m["end_date"]],
+                [m["id"], m["question"], m["category"], m["end_date"], m.get("slug")],
             )
         despues = con.execute("SELECT count(*) FROM markets").fetchone()[0]
         insertados = despues - antes
         logger.info("Markets guardados: %d nuevos de %d recibidos", insertados, len(markets))
         return insertados
+    finally:
+        con.close()
+
+
+# ── Resoluciones ─────────────────────────────────────────────────────────────
+
+
+def poblar_slugs_desde_trades(slug_map: dict[str, str]) -> int:
+    """Actualiza el slug de markets que no lo tienen, usando un mapa conditionId -> slug.
+
+    Devuelve nº de markets actualizados.
+    """
+    if not slug_map:
+        return 0
+    con = get_connection()
+    try:
+        actualizados = 0
+        for condition_id, slug in slug_map.items():
+            result = con.execute(
+                "UPDATE markets SET slug = ? WHERE id = ? AND (slug IS NULL OR slug = '')",
+                [slug, condition_id],
+            )
+            actualizados += result.fetchone()[0] if hasattr(result, 'fetchone') else 0
+        # Count how many now have slugs
+        con.execute("SELECT 1")  # force flush
+        total_con_slug = con.execute("SELECT COUNT(*) FROM markets WHERE slug IS NOT NULL").fetchone()[0]
+        logger.info("Slugs poblados: %d markets ahora tienen slug", total_con_slug)
+        return total_con_slug
+    finally:
+        con.close()
+
+
+def obtener_markets_sin_resolver() -> list[dict]:
+    """Devuelve markets con end_date pasada que no están resueltos.
+
+    Retorna lista de dicts con id y slug.
+    """
+    con = get_connection()
+    try:
+        rows = con.execute("""
+            SELECT id, slug FROM markets
+            WHERE end_date < CURRENT_TIMESTAMP
+            AND (resolved = FALSE OR resolved IS NULL)
+            AND slug IS NOT NULL
+        """).fetchall()
+        result = [{"id": r[0], "slug": r[1]} for r in rows]
+        logger.info("Markets sin resolver con end_date pasada: %d", len(result))
+        return result
+    finally:
+        con.close()
+
+
+def actualizar_resoluciones(markets_resueltos: list[dict]) -> int:
+    """Actualiza markets resueltos en la DB. Devuelve nº actualizados.
+
+    Cada dict debe tener: id, winning_outcome.
+    """
+    if not markets_resueltos:
+        return 0
+    con = get_connection()
+    try:
+        actualizados = 0
+        for m in markets_resueltos:
+            con.execute(
+                """
+                UPDATE markets
+                SET resolved = TRUE, winning_outcome = ?
+                WHERE id = ?
+                """,
+                [m["winning_outcome"], m["id"]],
+            )
+            actualizados += 1
+        logger.info("Markets actualizados con resolución: %d", actualizados)
+        return actualizados
     finally:
         con.close()
 
